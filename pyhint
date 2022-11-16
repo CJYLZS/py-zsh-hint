@@ -1,0 +1,573 @@
+#! /usr/bin/python3
+import re
+import os
+import sys
+import tty
+import time
+import _thread
+
+# from cjutils.logger import *
+# get_logger(filename='test.log', overwriteDefaultLogger=True,
+#            level=logging.DEBUG, alwaysUseStdOut=False)
+
+
+DO_NOTHING = 0
+RUN_CMD = 1
+CANCEL = 130
+
+
+def red(str):
+    return f'\033[31m{str}\033[0m'
+
+
+def green(str):
+    return f'\033[32m{str}\033[0m'
+    # return f'$[green]{str}$reset_color'
+
+
+def yellow(str):
+    return f'\033[33m{str}\033[0m'
+
+
+def blue(str):
+    return f'\033[34m{str}\033[0m'
+
+
+def purple(str):
+    return f'\033[35m{str}\033[0m'
+
+
+def cyan(str):
+    return f'\033[36m{str}\033[0m'
+
+
+def lred(str):
+    return f'\033[1;31m{str}\033[0m'
+
+
+def get_terminal_size():
+    try:
+        return int(os.environ["LINES"]), int(os.environ["COLUMNS"])
+    except:
+        tmp = os.get_terminal_size()
+        return tmp.lines, tmp.columns
+
+
+def get_cursor_pos():
+    # x: line_index
+    # y: column_index
+    '''
+        echo -ne '\u001b[6n' > /dev/tty
+        read -t 1 -s -d 'R' pos < /dev/tty
+        pos="${pos##*\[}"
+        row="$(( ${pos%;*} -1 ))"
+        col="$(( ${pos#*;} -1 ))"
+        echo $row $col
+    '''
+    with open('/dev/tty', 'w') as f:
+        f.write('\u001b[6n')
+    with open('/dev/tty', 'r') as f:
+        tty.setcbreak(f)
+        tmp = ''
+        while True:
+            x = f.read(1)
+            if x == 'R':
+                break
+            tmp += x
+    x, y = tmp[2:].split(';')
+    return int(x), int(y)
+
+
+def setTimeOut(func, timeout):
+    def _func():
+        time.sleep(timeout)
+        return func()
+    _thread.start_new_thread(_func, ())
+
+
+class KeyEvent:
+    def __init__(self, debug=False, callback=None) -> None:
+        self.__bindkey_dict = {
+            27: {
+                91:
+                {
+                    # arrow keys
+                    # 65:UP 66:DOWN 67:RIGHT 68:LEFT
+                },
+                79: {
+                    # in zsh arrow keys is 79
+                }
+            }
+        }
+        self.__key_state_list = []
+        self.__state_lock = _thread.allocate_lock()
+        self.debug = debug
+        if callback is None or not callable(callback):
+            self.callback = self.__default
+        else:
+            self.callback = callback
+
+    def get_key_event(self, ordk):
+        return tuple([*self.__key_state_list, ordk])
+
+    def __default(self, ordk):
+        if self.debug:
+            print(len(self.__key_state_list), self.__key_state_list, ordk)
+
+    def __timeout_clear_state(self):
+        def func():
+            with self.__state_lock:
+                if len(self.__key_state_list) > 0:
+                    tmp = self.__key_state_list.pop()
+                    self.__key_state_list.clear()
+                    self.callback(tmp)
+        setTimeOut(func, 0.04)
+
+    def dispatch_key_event(self, ordk):
+        with self.__state_lock:
+            if len(self.__key_state_list) == 0:
+                # single key abcdefg
+                if not ordk in self.__bindkey_dict:
+                    return self.callback(ordk)
+                if isinstance(self.__bindkey_dict[ordk], dict):
+                    self.__key_state_list.append(ordk)
+                    self.__timeout_clear_state()
+                else:
+                    self.__bindkey_dict[ordk]()
+                return False
+            else:
+                # multiple key alt+j alt+k
+                tmp = self.__bindkey_dict[self.__key_state_list[0]]
+                for tmpk in self.__key_state_list[1:]:
+                    if not isinstance(tmp, dict) or tmpk not in tmp:
+                        break
+                    tmp = tmp[tmpk]
+                if not isinstance(tmp, dict) or ordk not in tmp:
+                    res = self.callback(ordk)
+                    self.__key_state_list.clear()
+                    return res
+                tmp = tmp[ordk]
+                if isinstance(tmp, dict):
+                    self.__key_state_list.append(ordk)
+                    self.__timeout_clear_state()
+                else:
+                    self.__key_state_list.clear()
+                    tmp()
+                return False
+
+    def test(self):
+        with open('/dev/tty', 'r') as fdr, open('/dev/tty', 'w') as fdw:
+            tty.setcbreak(fdr)
+            while True:
+                ordk = ord(fdr.read(1))
+                if not self.dispatch_key_event(ordk):
+                    # fdw.write(key)
+                    # fdw.flush()
+                    pass
+
+
+class AutoTab(KeyEvent):
+    BACKSPACE = 127
+    ENTER = 10
+    ESCAPE = 27
+    TAB = 9
+    DOWN = 106  # j
+    UP = 107  # k
+    DIR_UP = 98  # b
+    HISTORY_BACK = 104  # h
+    HISTORY_FORWARD = 108  # l
+    # Regex for ANSI colour codes
+    ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+    HINT_START = yellow(' >>>>>>> ')
+
+    def get_alias(self):
+        _str = os.environ.get("ALIAS", "")
+        res = []
+        for line in _str.split('\n'):
+            if len(line) == 0:
+                continue
+            name, *value = line.split('=')
+            value = '='.join(value).strip("'")
+            res.append((name, value))
+        return res
+
+    def get_executable(self):
+        for path in os.environ["PATH"].split(":"):
+            for f in os.scandir(path):
+                if os.access(f.path, os.X_OK):
+                    self.execuable_list.append(f.name)
+
+        self.alias_dict = {}
+        for alias, cmd in self.get_alias():
+            self.execuable_list.append(alias)
+            self.alias_dict[alias] = cmd
+
+    def __init__(self, debug=False) -> None:
+        super().__init__(debug, callback=self.handle_keyevent)
+        self.key_map = {
+            self.BACKSPACE: '\b \b'
+        }
+        self.buffer = []
+        self.buffer_str = ''
+        self.command_map = {
+            'cd': self.handle_cd
+        }
+        self.execuable_list = []
+        self.get_executable()
+        self.suggestion_list = []
+        self.suggestion_history_back_list = []
+        self.suggestion_history_forward_list = []
+        self.suggestion_idx = 0
+        self.suggestion_str = ''
+
+        self.CAN_SOURCE_LIST = ['cd']
+
+        self.completion_type = None  # 'cmd' or 'filename'
+        self.completion_word = ''
+        self.completion_cmd = ''
+
+        self.__cursor_x, _ = get_cursor_pos()
+        self.__terminal_lines, self.__terminal_cols = get_terminal_size()
+        self.__left_lines = self.__terminal_lines - self.__cursor_x
+
+    def move_down(self):
+        self.suggestion_idx += 1
+        self.suggestion_idx %= len(self.suggestion_list) + 1
+        self.indicate()
+
+    def move_up(self):
+        self.suggestion_idx -= 1
+        if self.suggestion_idx < 0:
+            self.suggestion_idx = len(self.suggestion_list)
+        self.indicate()
+
+    def indicate(self):
+        _str = '\n ' * (len(self.suggestion_list))
+        sys.stderr.write(f"\033[s{_str}\033[u")
+        if self.suggestion_idx == len(self.suggestion_list):
+            return
+        _str = '\n' * (self.suggestion_idx + 1) + "\033[1;32m>\033[0m"
+        sys.stderr.write(f"\033[s{_str}\033[u")
+
+    def clear_suggestion_area(self):
+        _str = ''
+        # suggestion_str always startswith \n
+        for s in self.suggestion_str.split('\n')[1:]:
+            _str += '\n ' + ' ' * len(s)
+        sys.stderr.write(f"\033[s{_str}\033[u")
+        self.suggestion_str = ''
+
+    def handle_cmd(self) -> str:
+        # self.suggestion_list = set()
+        # show_list = set()
+        suggestion_tmp_list = set()
+        for cmd in self.execuable_list:
+            if cmd.startswith(self.completion_word):
+                if cmd in self.alias_dict:
+                    tmp = cmd + self.HINT_START + self.alias_dict[cmd]
+                    colored_tmp = tmp.replace(
+                        self.completion_word, red(self.completion_word))
+                    # self.suggestion_list.add(tmp)
+                    # show_list.add(colored_tmp)
+                    suggestion_tmp_list.add((len(tmp), tmp, colored_tmp))
+                else:
+                    suggestion_tmp_list.add((len(cmd), cmd, (cmd).replace(
+                        self.completion_word, red(self.completion_word))))
+                if len(suggestion_tmp_list) == self.__left_lines:
+                    break
+        suggestion_tmp_list = sorted(suggestion_tmp_list, key=lambda s: s[0])
+        self.suggestion_list = [s[1] for s in suggestion_tmp_list]
+        self.suggestion_idx = len(self.suggestion_list)
+        show_list = [s[2] for s in suggestion_tmp_list]
+        return '\n ' + '\n '.join(show_list)
+
+    def handle_cd(self) -> str:
+        sep = os.path.sep
+        path = self.completion_word
+        if path.startswith('~'):
+            path = os.path.expanduser(path)
+
+        pos = path.rfind(sep)
+        base_dir = path[:pos + 1] if pos != -1 else '.'
+        dest_dir = path[pos + 1:]
+        self.suggestion_list = []
+        show_list = []
+        try:
+            if len(dest_dir) == 0:
+                # list all dir
+                for f in os.scandir(base_dir):
+                    if f.is_dir():
+                        tmp = f.path + sep
+                        self.suggestion_list.append(tmp)
+                        show_list.append(tmp)
+                        if len(self.suggestion_list) == self.__left_lines:
+                            break
+            else:
+                # list and highlight specified dir
+                suggestion_tmp_list = []
+                for f in os.scandir(base_dir):
+                    pos = f.name.find(dest_dir)
+                    if pos != -1 and f.is_dir():
+                        tmp = f.path + sep
+                        colored_tmp = tmp.replace(dest_dir, red(dest_dir))
+                        suggestion_tmp_list.append((pos, tmp, colored_tmp))
+                        if len(suggestion_tmp_list) == self.__left_lines:
+                            break
+                suggestion_tmp_list = sorted(
+                    suggestion_tmp_list, key=lambda k: k[0])
+                self.suggestion_list = [s[1] for s in suggestion_tmp_list]
+                show_list = [s[2] for s in suggestion_tmp_list]
+
+            self.suggestion_idx = len(self.suggestion_list)
+            return '\n ' + '\n '.join(show_list)
+        except Exception as e:
+            self.suggestion_idx = 0
+            return '\n ' + red(f"{e}")
+
+    def handle_default(self) -> str:
+        # complete any file
+        sep = os.path.sep
+        path = self.completion_word
+        if path.startswith('~'):
+            path = os.path.expanduser(path)
+
+        pos = path.rfind(sep)
+        base_dir = path[:pos + 1] if pos != -1 else '.'
+        dest_dir = path[pos + 1:]
+        self.suggestion_list = []
+        show_list = []
+        # list and highlight specified dir
+        suggestion_tmp_list = []
+        try:
+            for f in os.scandir(base_dir):
+                pos = f.name.find(dest_dir)
+                if pos != -1:
+                    if f.path.startswith('./'):
+                        tmp = f.path[2:]
+                    else:
+                        tmp = f.path
+                    colored_tmp = tmp.replace(dest_dir, red(dest_dir))
+                    suggestion_tmp_list.append(
+                        (pos, tmp, colored_tmp, f.is_dir()))
+                    if len(suggestion_tmp_list) == self.__left_lines:
+                        break
+            suggestion_tmp_list = sorted(
+                suggestion_tmp_list, key=lambda k: (k[3], k[0]))
+            self.suggestion_list = [s[1] for s in suggestion_tmp_list]
+            show_list = [s[2] for s in suggestion_tmp_list]
+            self.suggestion_idx = len(self.suggestion_list)
+            return '\n ' + '\n '.join(show_list)
+        except Exception as e:
+            self.suggestion_idx = 0
+            return '\n ' + red(f"{e}")
+
+    def update_buffer(self, ordk=None, new_buffer_str=None):
+        if ordk is not None:
+            if ordk == self.BACKSPACE:
+                self.buffer.pop()
+            if chr(ordk).isprintable():
+                self.buffer.append(chr(ordk))
+            self.buffer_str = ''.join(self.buffer)
+        if isinstance(new_buffer_str, str):
+            self.buffer = [ch for ch in new_buffer_str]
+            self.buffer_str = new_buffer_str
+
+        if ' ' not in self.buffer_str:
+            self.completion_type = 'cmd'
+            self.completion_word = self.buffer_str
+        else:
+            self.completion_type = 'filename'
+            tmp = self.buffer_str.split(' ')
+            self.completion_cmd = tmp[0]
+            self.completion_word = tmp[-1]
+
+    def update_suggestion(self):
+        self.clear_suggestion_area()
+        if self.completion_type == 'cmd':
+            # command completion
+            suggestion = self.handle_cmd()
+        elif self.completion_cmd in self.command_map:
+            # special completion
+            suggestion = self.command_map[self.completion_cmd]()
+        else:
+            # normal completion
+            suggestion = self.handle_default()
+        sys.stderr.write(f'\033[s{suggestion}\033[u')
+        self.suggestion_str = suggestion
+
+    def expand_suggest(self, suggest):
+        cmd, *args = self.buffer_str.split(' ')
+        return ' '.join([cmd] + args[:-1] + [suggest])
+
+    def set_selected_suggest(self, suggest: str = None):
+        old_length = len(self.buffer_str)
+        if isinstance(suggest, str):
+            res = suggest
+        else:
+            res = ''
+            if len(self.suggestion_list) == 0:
+                return res
+            self.suggestion_history_forward_list.clear()
+            self.suggestion_history_back_list.append(self.buffer_str)
+            cmd, *args = self.buffer_str.split()
+            idx = 0 if self.suggestion_idx == len(
+                self.suggestion_list) else self.suggestion_idx
+            if self.completion_type == 'cmd':
+                res = self.suggestion_list[idx]
+            else:
+                res = self.expand_suggest(self.suggestion_list[idx])
+        pos = res.find(self.HINT_START)
+        if pos != -1:
+            res = res[:pos].strip()
+        # res = re.sub(self.ANSI_RE, '', res)  # remove color
+        self.update_buffer(new_buffer_str=res)
+        self.update_suggestion()
+        return '\b \b' * old_length + self.buffer_str
+
+    def move_history_back(self) -> str:
+        if len(self.suggestion_history_back_list) == 0:
+            return ''
+
+        self.suggestion_history_forward_list.append(self.buffer_str)
+        return self.set_selected_suggest(suggest=self.suggestion_history_back_list.pop())
+
+    def move_history_forward(self) -> str:
+        if len(self.suggestion_history_forward_list) == 0:
+            return ''
+        self.suggestion_history_back_list.append(self.buffer_str)
+        return self.set_selected_suggest(suggest=self.suggestion_history_forward_list.pop())
+
+    def try_dir_up(self) -> str:
+        if os.path.sep not in self.completion_word:
+            return ''
+        if self.buffer_str.endswith(os.path.sep):
+            _str = self.buffer_str[:self.buffer_str[:-
+                                                    1].rfind(os.path.sep) + 1]
+        else:
+            _str = self.buffer_str[:self.buffer_str.rfind(os.path.sep) + 1]
+        return self.set_selected_suggest(suggest=_str)
+
+    def get_ret_code(self):
+        if self.completion_type == 'cmd':
+            return DO_NOTHING
+        return RUN_CMD
+
+    def handle_keyevent(self, ordk):
+        keys_tuple = self.get_key_event(ordk)
+        if len(keys_tuple) == 1:
+            if ordk == self.ENTER:
+                return self.get_ret_code()  # normal finish
+            elif ordk == self.TAB:
+                return self.set_selected_suggest()
+            self.update_buffer(ordk=ordk)
+            self.update_suggestion()
+            return True
+
+        if len(keys_tuple) == 2:
+            if keys_tuple == (self.ESCAPE, self.DOWN):
+                self.move_down()
+            elif keys_tuple == (self.ESCAPE, self.UP):
+                self.move_up()
+            elif keys_tuple == (self.ESCAPE, self.DIR_UP):
+                return self.try_dir_up()
+            elif keys_tuple == (self.ESCAPE, self.HISTORY_BACK):
+                return self.move_history_back()
+            elif keys_tuple == (self.ESCAPE, self.HISTORY_FORWARD):
+                return self.move_history_forward()
+
+        return False
+
+    def finish(self):
+        self.clear_suggestion_area()
+        sys.stdout.write(self.buffer_str)
+
+    def init_buffer(self):
+        self.update_buffer(new_buffer_str=os.environ.get("BUFFER", ""))
+        # self.fdw.write('\b' * len(self.buffer_str))
+        # self.fdw.write(self.buffer_str)
+
+    def try_complete_part(self):
+        # find longest prefix
+        if len(self.suggestion_list) == 0:
+            return
+        s = len(self.completion_word) + 1
+        part = self.completion_word
+        tmp_list = sorted(
+            [s for s in self.suggestion_list if s.startswith(part)], key=lambda s: len(s), reverse=True)
+        if len(tmp_list) == 0:
+            return
+        longest_str = tmp_list[0]
+        while True:
+            b = False
+            tmp = longest_str[:s]
+            for suggestion in tmp_list:
+                if not suggestion.startswith(tmp):
+                    b = True
+                    break
+            if b:
+                break
+            part = tmp
+            s += 1
+            if s == len(longest_str):
+                break
+        self.fdw.write('\b' * len(self.buffer_str))
+        if self.completion_type == 'cmd':
+            self.update_buffer(new_buffer_str=part)
+        else:
+            self.update_buffer(new_buffer_str=self.expand_suggest(part))
+        self.fdw.write(self.buffer_str)
+        self.fdw.flush()
+
+    def fast_complete(self):
+        self.update_buffer(new_buffer_str=os.environ.get("BUFFER", ""))
+        res = False
+        if self.completion_type == 'cmd':
+            self.handle_cmd()
+            if len(self.suggestion_list) != 1:
+                # more than one or zero
+                res = False
+            else:
+                sys.stdout.write(self.suggestion_list[0])
+                res = True
+        else:
+            if self.completion_cmd in self.command_map:
+                self.command_map[self.completion_cmd]()
+                if len(self.suggestion_list) != 1:
+                    res = False
+                else:
+                    sys.stdout.write(self.expand_suggest(
+                        self.suggestion_list[0]))
+                    res = True
+        self.try_complete_part()
+        return res
+
+    def main(self):
+        ret = DO_NOTHING
+        with open('/dev/tty', 'r') as self.fdr, open('/dev/tty', 'w') as self.fdw:
+            tty.setcbreak(self.fdr)
+            if self.fast_complete():
+                return DO_NOTHING
+            self.update_suggestion()
+            try:
+                while True:
+                    key = self.fdr.read(1)
+                    ordk = ord(key)
+                    if (res := self.dispatch_key_event(ordk)) is not False:
+                        if res is not True and isinstance(res, int):
+                            ret = res
+                            self.finish()
+                            break
+                        if isinstance(res, str):
+                            self.fdw.write(res)
+                        else:
+                            self.fdw.write(self.key_map.get(ordk, key))
+                        self.fdw.flush()
+            except KeyboardInterrupt:
+                self.finish()
+                return CANCEL
+        return ret
+
+
+if __name__ == '__main__':
+    ret = AutoTab().main()
+    sys.exit(ret)
