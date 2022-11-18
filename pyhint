@@ -481,11 +481,6 @@ class AutoTab(KeyEvent):
         self.clear_suggestion_area()
         sys.stdout.write(self.buffer_str)
 
-    def init_buffer(self):
-        self.update_buffer(new_buffer_str=os.environ.get("BUFFER", ""))
-        # self.fdw.write('\b' * len(self.buffer_str))
-        # self.fdw.write(self.buffer_str)
-
     def try_complete_part(self):
         # find longest prefix
         if len(self.suggestion_list) == 0:
