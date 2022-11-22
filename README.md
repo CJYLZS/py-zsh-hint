@@ -34,3 +34,8 @@ source /path/to/py-zsh-hint/py-zsh-hint.plugin.zsh
 ### example:
 
 ![](./pics/example.gif)
+
+## todo
+
+- parent dir bug
+- cursor flash bug
