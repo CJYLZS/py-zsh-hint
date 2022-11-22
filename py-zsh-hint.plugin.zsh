@@ -1,9 +1,9 @@
-PWD=$(pwd)
+CURDIR=$(pwd)
 cd $(dirname $0)
 if [ ! -f /usr/bin/pyhint ]; then
     sudo ln -s $(pwd)/pyhint /usr/bin/pyhint
 fi
-cd $PWD
+cd $CURDIR
 
 function py_hint(){
     # emulate -L zsh
