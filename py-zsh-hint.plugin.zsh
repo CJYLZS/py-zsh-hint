@@ -1,11 +1,11 @@
 PWD=$(pwd)
 cd $(dirname $0)
-if [ ! -f /usr/bin/autotab ]; then
+if [ ! -f /usr/bin/pyhint ]; then
     sudo ln -s $(pwd)/pyhint /usr/bin/pyhint
 fi
 cd $PWD
 
-function py_autotab(){
+function py_hint(){
     # emulate -L zsh
     LBUFFER=$(LINES=${LINES} COLUMNS=${COLUMNS} BUFFER=${LBUFFER} ALIAS=$(alias) pyhint)
     RET=$?
@@ -21,6 +21,6 @@ function py_autotab(){
     fi
 }
 
-zle -N py_autotab
+zle -N py_hint
 
-bindkey '^U' py_autotab
+bindkey '^U' py_hint

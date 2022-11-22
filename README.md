@@ -4,15 +4,19 @@
 
 - `ctrl + u` : start
 
-- `alt + h` : selected history back
+- `alt + o` : selected history forward
 
-- `alt + l` : selected history forward
+- `alt + b` : selected history back
 
-- `alt + j` : next option
+- `alt + h` : left option 
 
-- `alt + k` : last option
+- `alt + l` : right option
 
-- `alt + b` : parent dir
+- `alt + j` : down option
+
+- `alt + k` : up option
+
+- `alt + p` : parent dir
 
 - `tab` : chose option
 
