@@ -37,9 +37,10 @@ class PyHint(KeyEvent):
 
     def get_executable(self):
         for path in os.environ["PATH"].split(":"):
-            for f in os.scandir(path):
-                if os.access(f.path, os.X_OK):
-                    self.execuable_list.append(f.name)
+            if os.path.exists(path):
+                for f in os.scandir(path):
+                    if os.access(f.path, os.X_OK):
+                        self.execuable_list.append(f.name)
 
         self.alias_dict = {}
         for alias, cmd in self.get_alias():
@@ -285,8 +286,8 @@ class PyHint(KeyEvent):
         if os.path.sep not in self.completion_word:
             return self.IGNORE
         if self.buffer_str.endswith(os.path.sep):
-            _str = self.buffer_str[:self.buffer_str[:-
-                                                    1].rfind(os.path.sep) + 1]
+            _str = self.buffer_str[:self.buffer_str[:
+                                                    - 1].rfind(os.path.sep) + 1]
         else:
             _str = self.buffer_str[:self.buffer_str.rfind(os.path.sep) + 1]
         return self.set_selected_suggest(suggest=_str)
